@@ -549,6 +549,13 @@ impl ElementCx<'_, '_> {
 
         let border_width = border_style.border_top_width.0.to_f64_px();
 
+        // A table with no CSS border resolves to width 0; painting inner
+        // gutters or outer edges anyway produced stray currentColor hairlines
+        // that Chrome does not draw.
+        if border_width <= 0.0 || border_style.border_top_style == BorderStyle::None {
+            return;
+        }
+
         // Draw horizontal inner borders
         let mut y = 0.0;
         for (&height, &gutter) in rows.sizes.iter().zip(rows.gutters.iter()) {
