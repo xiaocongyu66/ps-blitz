@@ -190,25 +190,27 @@ pub(crate) fn stroke_text_with_alpha<'a>(
                     // verified pixel-level at blur=1px earlier.
                     let sigma = shadow.blur.px() as f32 * 0.5;
 
-                    let draw_shadow = |scene: &mut dyn PaintScene| {
-                        scene.draw_glyphs(
-                            font,
-                            font_size,
-                            !FONT_EMBOLDEN_ENABLED, // hint
-                            run.normalized_coords(),
-                            embolden,
-                            Fill::NonZero,
-                            &shadow_paint,
-                            alpha,
-                            xform,
-                            glyph_xform,
-                            glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
-                                id: glyph.id as _,
-                                x: glyph.x,
-                                y: glyph.y,
-                            }),
-                        );
-                    };
+                    macro_rules! draw_shadow_glyphs {
+                        ($scene:expr) => {{
+                            $scene.draw_glyphs(
+                                font,
+                                font_size,
+                                !FONT_EMBOLDEN_ENABLED, // hint
+                                run.normalized_coords(),
+                                embolden,
+                                Fill::NonZero,
+                                &shadow_paint,
+                                alpha,
+                                xform,
+                                glyph_xform,
+                                glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
+                                    id: glyph.id as _,
+                                    x: glyph.x,
+                                    y: glyph.y,
+                                }),
+                            );
+                        }};
+                    }
 
                     if sigma > 0.0 {
                         // Clip to the glyph-run bounds inflated by the shadow
@@ -222,10 +224,10 @@ pub(crate) fn stroke_text_with_alpha<'a>(
                         let clip = Rect::new(x0 - pad, base - pad, x0 + w + pad, base + h + pad);
                         let filter = Filter::single(FilterEffect::blur(sigma));
                         scene.push_layer(Mix::Normal, 1.0, transform, &clip, Some(Arc::new(filter)), None);
-                        draw_shadow(scene);
+                        draw_shadow_glyphs!(scene);
                         scene.pop_layer();
                     } else {
-                        draw_shadow(scene);
+                        draw_shadow_glyphs!(scene);
                     }
                 }
 
