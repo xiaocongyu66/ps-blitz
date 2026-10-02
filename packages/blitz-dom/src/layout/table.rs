@@ -308,7 +308,18 @@ pub(crate) fn collect_table_cells(
             let mut style = stylo_taffy::to_taffy_style(stylo_style);
 
             if first_cell_border.is_none() {
-                *first_cell_border = Some(stylo_style.clone_border());
+                // Only record a border when some side actually has a style:
+                // stylo's computed width stays `medium` even for `none`, and
+                // feeding that into the collapse gap wedges a phantom gutter
+                // between cells that Chrome keeps flush.
+                let b = stylo_style.clone_border();
+                let has_border = !(b.border_left_style.none_or_hidden()
+                    && b.border_right_style.none_or_hidden()
+                    && b.border_top_style.none_or_hidden()
+                    && b.border_bottom_style.none_or_hidden());
+                if has_border {
+                    *first_cell_border = Some(b);
+                }
             }
 
             if *row == 1 {
