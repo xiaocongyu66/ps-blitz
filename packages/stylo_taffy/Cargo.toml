@@ -17,7 +17,7 @@ rust-version.workspace = true
 name = "stylo_taffy"
 
 [dependencies]
-taffy = { workspace = true }
+taffy = { workspace = true, features = ["float_layout"] }
 style = { workspace = true }
 style_atoms = { workspace = true }
 
