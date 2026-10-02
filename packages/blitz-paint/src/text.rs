@@ -1,8 +1,9 @@
-use anyrender::PaintScene;
+use anyrender::{Filter, PaintScene};
 use blitz_dom::{BaseDocument, NodeId, node::TextBrush, util::ToColorColor};
-use kurbo::{Affine, Rect, RoundedRect, Stroke};
+use kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
 use parley::{Affinity, Cursor, Layout, Line, PositionedLayoutItem, Selection};
-use peniko::Fill;
+use peniko::{Fill, Mix};
+use std::sync::Arc;
 use style::values::computed::{CSSPixelLength, TextDecorationLine};
 
 use crate::color::{Color, ToColorColor as _};
@@ -163,6 +164,65 @@ pub(crate) fn stroke_text_with_alpha<'a>(
                 } else {
                     kurbo::Vec2::default()
                 };
+
+                // text-shadow: CSS paints the list in reverse order (front to
+                // back), so the first entry ends up on top. Each shadow redraws
+                // the glyphs offset by (x, y) in the shadow colour; a non-zero
+                // blur radius runs through a gaussian layer with sigma = blur/2,
+                // the same convention our box-shadow path applies to CSS blur.
+                let shadow_list = &itext_styles.text_shadow.0;
+                if !shadow_list.is_empty() {
+                    let paint_glyphs =
+                        |scene: &mut impl PaintScene, paint: anyrender::Paint, xform: Affine| {
+                            scene.draw_glyphs(
+                                font,
+                                font_size,
+                                !FONT_EMBOLDEN_ENABLED, // hint
+                                run.normalized_coords(),
+                                embolden,
+                                Fill::NonZero,
+                                &paint,
+                                alpha,
+                                xform,
+                                glyph_xform,
+                                glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
+                                    id: glyph.id as _,
+                                    x: glyph.x,
+                                    y: glyph.y,
+                                }),
+                            );
+                        };
+
+                    for shadow in shadow_list.iter().rev() {
+                        let sc = shadow
+                            .color
+                            .resolve_to_absolute(&text_color)
+                            .as_srgb_color();
+                        let shadow_paint = anyrender::Paint::from(sc);
+                        let dx = shadow.horizontal.px() as f64;
+                        let dy = shadow.vertical.px() as f64;
+                        let sigma = shadow.blur.px() as f32 * 0.5;
+                        let xform = transform.then_translate(Vec2 { x: dx, y: dy });
+
+                        if sigma > 0.0 {
+                            // Generous clip so blurred shadows are not cut off;
+                            // vello_cpu allocates scratch buffers by layer size.
+                            let clip = Rect::new(-4.0e4, -4.0e4, 8.0e4, 8.0e4);
+                            scene.push_layer(
+                                Mix::Normal,
+                                1.0,
+                                transform,
+                                &clip,
+                                Some(Arc::new(Filter::blur(sigma))),
+                                None,
+                            );
+                            paint_glyphs(scene, shadow_paint, xform);
+                            scene.pop_layer();
+                        } else {
+                            paint_glyphs(scene, shadow_paint, xform);
+                        }
+                    }
+                }
 
                 scene.draw_glyphs(
                     font,
