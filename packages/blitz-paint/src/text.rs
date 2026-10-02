@@ -1,8 +1,11 @@
 use anyrender::PaintScene;
+use anyrender::filters::{Filter, FilterEffect};
 use blitz_dom::{BaseDocument, NodeId, node::TextBrush, util::ToColorColor};
 use kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
 use parley::{Affinity, Cursor, Layout, Line, PositionedLayoutItem, Selection};
 use peniko::Fill;
+use peniko::Mix;
+use std::sync::Arc;
 use style::values::computed::{CSSPixelLength, TextDecorationLine};
 
 use crate::color::{Color, ToColorColor as _};
@@ -182,23 +185,48 @@ pub(crate) fn stroke_text_with_alpha<'a>(
                     let dy = shadow.vertical.px() as f64;
                     let xform = transform.then_translate(Vec2 { x: dx, y: dy });
 
-                    scene.draw_glyphs(
-                        font,
-                        font_size,
-                        !FONT_EMBOLDEN_ENABLED, // hint
-                        run.normalized_coords(),
-                        embolden,
-                        Fill::NonZero,
-                        &shadow_paint,
-                        alpha,
-                        xform,
-                        glyph_xform,
-                        glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
-                            id: glyph.id as _,
-                            x: glyph.x,
-                            y: glyph.y,
-                        }),
-                    );
+                    // sigma = blur/2 (CSS blur radius convention, matching what
+                    // our box-shadow path feeds vello_cpu) — Chrome parity was
+                    // verified pixel-level at blur=1px earlier.
+                    let sigma = shadow.blur.px() as f32 * 0.5;
+
+                    let draw_shadow = |scene: &mut dyn PaintScene| {
+                        scene.draw_glyphs(
+                            font,
+                            font_size,
+                            !FONT_EMBOLDEN_ENABLED, // hint
+                            run.normalized_coords(),
+                            embolden,
+                            Fill::NonZero,
+                            &shadow_paint,
+                            alpha,
+                            xform,
+                            glyph_xform,
+                            glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
+                                id: glyph.id as _,
+                                x: glyph.x,
+                                y: glyph.y,
+                            }),
+                        );
+                    };
+
+                    if sigma > 0.0 {
+                        // Clip to the glyph-run bounds inflated by the shadow
+                        // offset plus ~3 sigma so the blur is not cut off, and
+                        // so vello_cpu's scratch buffers stay small.
+                        let x0 = glyph_run.offset() as f64;
+                        let w = glyph_run.advance() as f64;
+                        let base = glyph_run.baseline() as f64 - metrics.ascent as f64;
+                        let h = (metrics.ascent + metrics.descent) as f64;
+                        let pad = dx.abs().max(dy.abs()) + 3.0 * sigma as f64;
+                        let clip = Rect::new(x0 - pad, base - pad, x0 + w + pad, base + h + pad);
+                        let filter = Filter::single(FilterEffect::blur(sigma));
+                        scene.push_layer(Mix::Normal, 1.0, transform, &clip, Some(Arc::new(filter)), None);
+                        draw_shadow(scene);
+                        scene.pop_layer();
+                    } else {
+                        draw_shadow(scene);
+                    }
                 }
 
                 scene.draw_glyphs(
