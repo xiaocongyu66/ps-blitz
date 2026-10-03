@@ -1823,9 +1823,19 @@ impl BaseDocument {
                     node.element_data_mut().unwrap().special_data =
                         SpecialElementData::Image(Box::new(image.clone()));
 
-                    // Clear layout cache
-                    node.cache_mut().clear();
-                    node.insert_damage(ALL_DAMAGE);
+                    // Clear the layout cache along the whole ancestor chain.
+                    // taffy memoizes child measurements inside each parent, so
+                    // clearing only the image node leaves parents — and the
+                    // root — with stale heights: the document never grows when
+                    // an <img>'s intrinsic size arrives, and screenshots get
+                    // cut off at the pre-load document height.
+                    let mut cur = Some(node_id);
+                    while let Some(id) = cur {
+                        let Some(n) = self.get_node_mut(id) else { break };
+                        n.cache_mut().clear();
+                        n.insert_damage(ALL_DAMAGE);
+                        cur = n.parent;
+                    }
                 }
                 ImageType::Background(idx) | ImageType::Mask(idx) => {
                     let layer_image = node.element_data_mut().and_then(|el| {
