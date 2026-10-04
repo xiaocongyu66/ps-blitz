@@ -938,7 +938,7 @@ fn f32_max(a: f32, b: f32) -> f32 {
 
 /// Perform absolute layout on all absolutely positioned children.
 #[inline]
-fn layout_abspos_child(
+pub(crate) fn layout_abspos_child(
     tree: &mut impl taffy::LayoutBlockContainer,
     item_id: u64,
     static_position: Point<f32>,

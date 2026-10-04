@@ -17,7 +17,7 @@ use taffy::{
 use crate::BaseDocument;
 
 use super::damage::{CONSTRUCT_BOX, CONSTRUCT_DESCENDENT, CONSTRUCT_FC};
-use super::resolve_calc_value;
+use super::{inline, resolve_calc_value};
 
 pub struct TableTreeWrapper<'doc> {
     pub(crate) doc: &'doc mut BaseDocument,
@@ -700,8 +700,39 @@ impl taffy::LayoutPartialTree for TableTreeWrapper<'_> {
         inputs: taffy::tree::LayoutInput,
     ) -> taffy::LayoutOutput {
         let cell = &self.ctx.cells[usize::from(node_id)];
-        let node_id = crate::taffy_node_id(cell.node_id);
-        self.doc.compute_child_layout(node_id, inputs)
+        let dom_node_id = cell.node_id;
+        let taffy_node_id = crate::taffy_node_id(dom_node_id);
+        let output = self.doc.compute_child_layout(taffy_node_id, inputs);
+
+        // Table rows are flattened into this grid, so a positioned cell never
+        // gets to participate in the normal containing-block walk. Re-run the
+        // existing absolute-position helper for its direct abspos children once
+        // the grid has supplied the cell's definite area. This is deliberately
+        // limited to relative cells: other positioning relationships remain the
+        // responsibility of the regular layout tree.
+        if inputs.run_mode == taffy::RunMode::PerformLayout
+            && cell.style.position == taffy::Position::Relative
+        {
+            let children = self.doc.nodes[dom_node_id]
+                .layout_children
+                .borrow()
+                .clone()
+                .unwrap_or_default();
+            let direction = cell.style.direction;
+            for child_id in children {
+                inline::layout_abspos_child(
+                    self.doc,
+                    child_id as u64,
+                    taffy::Point::ZERO,
+                    false,
+                    output.size,
+                    taffy::Point::ZERO,
+                    direction,
+                );
+            }
+        }
+
+        output
     }
 }
 

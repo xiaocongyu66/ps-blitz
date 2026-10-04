@@ -218,6 +218,31 @@ fn long_colspan_text_does_not_copy_into_each_date_column() {
 }
 
 #[test]
+fn relative_cell_is_the_containing_block_for_an_inset_overlay() {
+    const HTML: &str = r#"<!DOCTYPE html><style>
+        body { margin: 0 } table { border-collapse: collapse }
+        td { position: relative; width: 120px; height: 30px; padding: 0 }
+        .overlay { position: absolute; inset: 0; height: 100%; background: red }
+    </style><table><tr><td id="cell"><span id="overlay" class="overlay"></span></td></tr></table>"#;
+    let mut doc = HtmlDocument::from_html(
+        HTML,
+        DocumentConfig {
+            viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+            html_parser_provider: Some(Arc::new(HtmlProvider) as _),
+            ..Default::default()
+        },
+    );
+    doc.resolve(0.0);
+
+    let cell = rect(&doc, "#cell");
+    let overlay = rect(&doc, "#overlay");
+    assert_eq!(overlay.0, cell.0);
+    assert_eq!(overlay.1, cell.1);
+    assert_eq!(overlay.2, cell.2);
+    assert_eq!(overlay.3, cell.3);
+}
+
+#[test]
 fn rowspan_skips_the_occupied_slot() {
     const HTML: &str = r#"<!DOCTYPE html><style>
         body { margin: 0 } table { border-collapse: collapse }
