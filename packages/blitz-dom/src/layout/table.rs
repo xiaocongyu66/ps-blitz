@@ -348,11 +348,15 @@ pub(crate) fn collect_table_cells(
                     // Taffy resolves it against the table's inner width.
                     _ => style.size.width.into(),
                 };
-                // A spanning cell still covers one track per spanned column.
-                // Recording only one track makes later rows (for example a
-                // month header followed by one cell per day) start with too
-                // few columns and misplace the trailing cells.
-                columns.extend(std::iter::repeat_n(column, colspan as usize));
+                // A spanning header contributes columns, but its own width
+                // must not become the width of every covered date track.
+                if colspan == 1 {
+                    columns.push(column);
+                } else {
+                    columns.extend(
+                        std::iter::repeat_n(style_helpers::auto(), colspan as usize),
+                    );
+                }
             }
 
             // Zero-out cell borders is BorderCollapse is Collapse
