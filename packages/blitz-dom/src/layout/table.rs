@@ -348,7 +348,11 @@ pub(crate) fn collect_table_cells(
                     // Taffy resolves it against the table's inner width.
                     _ => style.size.width.into(),
                 };
-                columns.push(column);
+                // A spanning cell still covers one track per spanned column.
+                // Recording only one track makes later rows (for example a
+                // month header followed by one cell per day) start with too
+                // few columns and misplace the trailing cells.
+                columns.extend(std::iter::repeat_n(column, colspan as usize));
             }
 
             // Zero-out cell borders is BorderCollapse is Collapse
