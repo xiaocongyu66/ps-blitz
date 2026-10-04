@@ -113,3 +113,69 @@ fn a_row_group_spans_the_rows_it_holds() {
     );
     assert!(body.3 > first.3, "tbody covers both of its rows");
 }
+
+#[test]
+fn colspan_headers_preserve_thirteen_date_columns() {
+    const HTML: &str = r#"<!DOCTYPE html><style>
+        body { margin: 0 } table { border-collapse: collapse; width: 520px }
+        td { width: 40px; height: 20px; padding: 0 }
+    </style><table>
+        <tr><td id="sep" colspan="4">9月</td><td id="oct" colspan="9">10月</td></tr>
+        <tr><td id="d0">29</td><td id="d1">30</td><td id="d2">1</td><td id="d3">2</td>
+            <td id="d4">3</td><td id="d5">4</td><td id="d6">5</td><td id="d7">6</td>
+            <td id="d8">7</td><td id="d9">8</td><td id="d10">9</td><td id="d11">10</td><td id="d12">11</td></tr>
+    </table>"#;
+    let mut doc = HtmlDocument::from_html(
+        HTML,
+        DocumentConfig {
+            viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+            html_parser_provider: Some(Arc::new(HtmlProvider) as _),
+            ..Default::default()
+        },
+    );
+    doc.resolve(0.0);
+
+    let sep = rect(&doc, "#sep");
+    let oct = rect(&doc, "#oct");
+    assert!(sep.2 > 0.0 && oct.2 > 0.0);
+    assert!(oct.0 > sep.0 && sep.0 + sep.2 <= oct.0);
+
+    let dates: Vec<_> = (0..13)
+        .map(|index| rect(&doc, &format!("#d{index}")))
+        .collect();
+    for pair in dates.windows(2) {
+        assert!(pair[1].0 > pair[0].0, "date columns overlap: {pair:?}");
+        assert_eq!(pair[0].2, pair[1].2, "date columns differ in width");
+    }
+    assert!(
+        dates[0].0 < oct.0,
+        "September dates must precede October header"
+    );
+}
+
+#[test]
+fn rowspan_skips_the_occupied_slot() {
+    const HTML: &str = r#"<!DOCTYPE html><style>
+        body { margin: 0 } table { border-collapse: collapse }
+        td { width: 40px; height: 20px; padding: 0 }
+    </style><table><tr><td id="span" rowspan="2">a</td><td id="top">b</td></tr><tr><td id="bottom">c</td></tr></table>"#;
+    let mut doc = HtmlDocument::from_html(
+        HTML,
+        DocumentConfig {
+            viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+            html_parser_provider: Some(Arc::new(HtmlProvider) as _),
+            ..Default::default()
+        },
+    );
+    doc.resolve(0.0);
+    let span = rect(&doc, "#span");
+    let bottom = rect(&doc, "#bottom");
+    assert!(
+        bottom.0 > span.0,
+        "rowspan cell must reserve its column: {span:?} {bottom:?}"
+    );
+    assert!(
+        bottom.1 > span.1,
+        "second-row cell must be below the first row: {span:?} {bottom:?}"
+    );
+}

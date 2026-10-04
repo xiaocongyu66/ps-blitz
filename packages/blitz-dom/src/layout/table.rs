@@ -77,8 +77,9 @@ pub(crate) fn build_table_context(
     let mut cells: Vec<TableCell> = Vec::new();
     let mut rows: Vec<TableRow> = Vec::new();
     let mut row_groups: Vec<TableRowGroup> = Vec::new();
-    let mut row = 0u16;
-    let mut col = 0u16;
+    // CSS table placement is an occupancy problem, not dense grid flow. Keep
+    // explicit slots so a cell in a later row can skip an incoming rowspan.
+    let mut slots: Vec<Vec<bool>> = Vec::new();
 
     let root_node = &mut doc.nodes[table_root_node_id];
 
@@ -117,8 +118,7 @@ pub(crate) fn build_table_context(
             child_id,
             is_fixed,
             border_collapse,
-            &mut row,
-            &mut col,
+            &mut slots,
             &mut cells,
             &mut rows,
             &mut row_groups,
@@ -126,7 +126,8 @@ pub(crate) fn build_table_context(
             &mut first_cell_border,
         );
     }
-    column_sizes.resize(col as usize, style_helpers::auto());
+    let column_count = slots.iter().map(Vec::len).max().unwrap_or(0);
+    column_sizes.resize(column_count, style_helpers::auto());
 
     style.grid_template_columns = column_sizes.into_iter().map(|dim| dim.into()).collect();
     style.grid_template_rows = rows
@@ -212,8 +213,7 @@ pub(crate) fn collect_table_cells(
     node_id: NodeId,
     is_fixed: bool,
     border_collapse: BorderCollapse,
-    row: &mut u16,
-    col: &mut u16,
+    slots: &mut Vec<Vec<bool>>,
     cells: &mut Vec<TableCell>,
     rows: &mut Vec<TableRow>,
     row_groups: &mut Vec<TableRowGroup>,
@@ -253,8 +253,7 @@ pub(crate) fn collect_table_cells(
                     child_id,
                     is_fixed,
                     border_collapse,
-                    row,
-                    col,
+                    slots,
                     cells,
                     rows,
                     row_groups,
@@ -272,14 +271,14 @@ pub(crate) fn collect_table_cells(
         }
         DisplayInside::TableRow => {
             node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
-            *row += 1;
-            *col = 0;
-
             let row_index = rows.len();
+            if slots.len() <= row_index {
+                slots.push(Vec::new());
+            }
             let first_cell = cells.len();
             let row_style = node
                 .primary_styles()
-                .map(|s| stylo_taffy::to_taffy_style(&*s))
+                .map(|s| stylo_taffy::to_taffy_style(&s))
                 .unwrap_or_default();
             let row_height = if row_style.size.height.tag() == taffy::CompactLength::LENGTH_TAG {
                 row_style.size.height.value()
@@ -299,8 +298,7 @@ pub(crate) fn collect_table_cells(
                     child_id,
                     is_fixed,
                     border_collapse,
-                    row,
-                    col,
+                    slots,
                     cells,
                     rows,
                     row_groups,
@@ -313,16 +311,46 @@ pub(crate) fn collect_table_cells(
         }
         DisplayInside::TableCell => {
             // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
+            let Some(current_row) = rows.len().checked_sub(1) else {
+                node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
+                return;
+            };
             let stylo_style = &node.primary_styles().unwrap();
-            let colspan: u16 = node
+            let colspan: usize = node
                 .attr(local_name!("colspan"))
-                .and_then(|val| val.parse().ok())
+                .and_then(|val| val.parse::<usize>().ok())
+                .map(|v| v.clamp(1, 1000))
                 .unwrap_or(1);
-            let rowspan: u16 = node
+            let rowspan: usize = node
                 .attr(local_name!("rowspan"))
-                .and_then(|val| val.parse::<u16>().ok())
-                .map(|v| v.clamp(1, 65534))
+                .and_then(|val| val.parse::<usize>().ok())
+                .map(|v| v.clamp(1, 1000))
                 .unwrap_or(1);
+
+            // Find the first run of free slots in this row. Existing rows are
+            // extended as needed so incoming rowspans reserve their columns.
+            let mut column = 0;
+            loop {
+                let end = column + colspan;
+                if slots[current_row].len() < end {
+                    slots[current_row].resize(end, false);
+                }
+                if (column..end).all(|c| !slots[current_row][c]) {
+                    break;
+                }
+                column += 1;
+            }
+            for r in current_row..current_row + rowspan {
+                if slots.len() <= r {
+                    slots.push(Vec::new());
+                }
+                if slots[r].len() < column + colspan {
+                    slots[r].resize(column + colspan, false);
+                }
+                for slot in &mut slots[r][column..column + colspan] {
+                    *slot = true;
+                }
+            }
             let mut style = stylo_taffy::to_taffy_style(stylo_style);
 
             if first_cell_border.is_none() {
@@ -340,7 +368,7 @@ pub(crate) fn collect_table_cells(
                 }
             }
 
-            if *row == 1 {
+            if current_row == 0 {
                 let column = match style.size.width.tag() {
                     taffy::CompactLength::LENGTH_TAG => {
                         let len = style.size.width.value();
@@ -371,8 +399,9 @@ pub(crate) fn collect_table_cells(
                 if colspan == 1 {
                     columns.push(column);
                 } else {
-                    let auto_track: TrackSizingFunction = style_helpers::auto::<TrackSizingFunction>();
-                    columns.extend(std::iter::repeat_n(auto_track, colspan as usize));
+                    let auto_track: TrackSizingFunction =
+                        style_helpers::auto::<TrackSizingFunction>();
+                    columns.extend(std::iter::repeat_n(auto_track, colspan));
                 }
             }
 
@@ -385,23 +414,18 @@ pub(crate) fn collect_table_cells(
             // The margin properties do not apply to table-internal elements
             style.margin = taffy::Rect::ZERO.map(style_helpers::length);
 
-            // Let Taffy auto-place the column. Combined with
-            // `grid_auto_flow: RowDense` set on the table root, each cell
-            // scans from the first track in its row for a free position,
-            // which makes cells automatically skip columns occupied by
-            // rowspan cells from earlier rows.
+            // Give Taffy the slot-grid result explicitly; auto placement can
+            // otherwise move later cells across an incoming rowspan.
             style.grid_column = taffy::Line {
-                start: style_helpers::auto(),
-                end: style_helpers::span(colspan),
+                start: style_helpers::line((column + 1) as i16),
+                end: style_helpers::line((column + colspan + 1) as i16),
             };
             style.grid_row = taffy::Line {
-                start: style_helpers::line(*row as i16),
-                end: style_helpers::span(rowspan),
+                start: style_helpers::line((current_row + 1) as i16),
+                end: style_helpers::line((current_row + rowspan + 1) as i16),
             };
             style.size.width = style_helpers::auto();
             cells.push(TableCell { node_id, style });
-
-            *col += colspan;
         }
         DisplayInside::Flow
         | DisplayInside::FlowRoot
