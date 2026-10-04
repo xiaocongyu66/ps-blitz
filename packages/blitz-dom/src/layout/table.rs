@@ -279,8 +279,7 @@ pub(crate) fn collect_table_cells(
             let first_cell = cells.len();
             let row_style = node
                 .primary_styles()
-                .as_deref()
-                .map(stylo_taffy::to_taffy_style)
+                .map(|s| stylo_taffy::to_taffy_style(&*s))
                 .unwrap_or_default();
             let row_height = if row_style.size.height.tag() == taffy::CompactLength::LENGTH_TAG {
                 row_style.size.height.value()
