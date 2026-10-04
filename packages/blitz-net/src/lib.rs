@@ -227,7 +227,11 @@ impl Provider {
                 Ok((request.url.to_string(), Bytes::from(decoded.0)))
             }
             "file" => {
-                let file_content = std::fs::read(request.url.path())?;
+                let file_path = request
+                    .url
+                    .to_file_path()
+                    .map_err(|()| std::io::Error::new(std::io::ErrorKind::InvalidInput, "file URL is not local"))?;
+                let file_content = std::fs::read(file_path)?;
                 Ok((request.url.to_string(), Bytes::from(file_content)))
             }
             _ => Self::fetch_http(client, request, per_host_limits, user_agent).await,
@@ -386,7 +390,10 @@ impl Provider {
                     .body(body))
             }
             "file" => {
-                let file_content = std::fs::read(url.path())?;
+                let file_path = url
+                    .to_file_path()
+                    .map_err(|()| FetchError::InvalidRequest("file URL is not local".into()))?;
+                let file_content = std::fs::read(file_path)?;
                 Ok(FetchResponse::new(url, StatusCode::OK).body(Bytes::from(file_content)))
             }
             _ => {
