@@ -353,7 +353,7 @@ pub(crate) fn collect_table_cells(
                 if colspan == 1 {
                     columns.push(column);
                 } else {
-                    let auto_track: TrackSizingFunction = style_helpers::auto().into();
+                    let auto_track: TrackSizingFunction = style_helpers::auto::<TrackSizingFunction>();
                     columns.extend(std::iter::repeat_n(auto_track, colspan as usize));
                 }
             }
