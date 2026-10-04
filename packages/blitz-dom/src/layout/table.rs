@@ -46,6 +46,12 @@ pub struct TableCell {
     // kind: TableItemKind,
     node_id: NodeId,
     style: taffy::Style<Atom>,
+    /// Explicit horizontal span used by the small intrinsic-width pass below.
+    column: usize,
+    colspan: usize,
+    /// Only definite CSS lengths participate; intrinsic content and percentages
+    /// remain Taffy's responsibility.
+    declared_width: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -127,7 +133,14 @@ pub(crate) fn build_table_context(
         );
     }
     let column_count = slots.iter().map(Vec::len).max().unwrap_or(0);
+    column_sizes.clear();
     column_sizes.resize(column_count, style_helpers::auto());
+    distribute_colspanned_widths(
+        &cells,
+        &mut column_sizes,
+        border_spacing.width.px(),
+        border_collapse,
+    );
 
     style.grid_template_columns = column_sizes.into_iter().map(|dim| dim.into()).collect();
     style.grid_template_rows = rows
@@ -352,6 +365,22 @@ pub(crate) fn collect_table_cells(
                 }
             }
             let mut style = stylo_taffy::to_taffy_style(stylo_style);
+            let declared_width = if style.size.width.tag() == taffy::CompactLength::LENGTH_TAG {
+                let padding = style.padding.resolve_or_zero(None, resolve_calc_value);
+                let border = style.border.resolve_or_zero(None, resolve_calc_value);
+                Some(match style.box_sizing {
+                    taffy::BoxSizing::ContentBox => {
+                        style.size.width.value()
+                            + padding.left
+                            + padding.right
+                            + border.left
+                            + border.right
+                    }
+                    taffy::BoxSizing::BorderBox => style.size.width.value(),
+                })
+            } else {
+                None
+            };
 
             if first_cell_border.is_none() {
                 // Only record a border when some side actually has a style:
@@ -425,7 +454,13 @@ pub(crate) fn collect_table_cells(
                 end: style_helpers::line((current_row + rowspan + 1) as i16),
             };
             style.size.width = style_helpers::auto();
-            cells.push(TableCell { node_id, style });
+            cells.push(TableCell {
+                node_id,
+                style,
+                column,
+                colspan,
+                declared_width,
+            });
         }
         DisplayInside::Flow
         | DisplayInside::FlowRoot
@@ -535,6 +570,61 @@ pub(crate) fn assign_row_layouts(doc: &mut BaseDocument, ctx: &TableContext) {
             continue;
         }
         write_box(doc, group.node_id, left, top, right - left, bottom - top);
+    }
+}
+
+/// Build the safe, definite-width subset of CSS table column measures.
+///
+/// Single-column cells establish the baseline. A definite spanning width is
+/// then reduced by the inter-column spacing and distributed over its tracks in
+/// proportion to their existing widths, falling back to equal tracks. This
+/// keeps a long spanning label from being copied into every covered column.
+fn distribute_colspanned_widths(
+    cells: &[TableCell],
+    columns: &mut [TrackSizingFunction],
+    border_spacing: f32,
+    border_collapse: BorderCollapse,
+) {
+    let mut widths = vec![0.0_f32; columns.len()];
+    for cell in cells.iter().filter(|cell| cell.colspan == 1) {
+        if let Some(width) = cell.declared_width {
+            widths[cell.column] = widths[cell.column].max(width);
+        }
+    }
+
+    let mut spanning: Vec<_> = cells
+        .iter()
+        .filter(|cell| cell.colspan > 1 && cell.declared_width.is_some())
+        .collect();
+    spanning.sort_by_key(|cell| cell.colspan);
+    for cell in spanning {
+        let Some(width) = cell.declared_width else {
+            continue;
+        };
+        let available = if border_collapse == BorderCollapse::Separate {
+            (width - border_spacing * (cell.colspan.saturating_sub(1) as f32)).max(0.0)
+        } else {
+            width
+        };
+        let current: f32 = widths[cell.column..cell.column + cell.colspan].iter().sum();
+        if current >= available {
+            continue;
+        }
+        let extra = available - current;
+        let weights: Vec<f32> = widths[cell.column..cell.column + cell.colspan]
+            .iter()
+            .map(|width| if *width > 0.0 { *width } else { 1.0 })
+            .collect();
+        let weight_sum: f32 = weights.iter().sum();
+        for (index, weight) in weights.into_iter().enumerate() {
+            widths[cell.column + index] += extra * weight / weight_sum;
+        }
+    }
+
+    for (column, width) in columns.iter_mut().zip(widths) {
+        if width > 0.0 {
+            *column = style_helpers::length(width);
+        }
     }
 }
 

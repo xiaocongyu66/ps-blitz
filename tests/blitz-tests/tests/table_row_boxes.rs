@@ -154,6 +154,70 @@ fn colspan_headers_preserve_thirteen_date_columns() {
 }
 
 #[test]
+fn definite_colspan_width_is_distributed_across_covered_columns() {
+    const HTML: &str = r#"<!DOCTYPE html><style>
+        body { margin: 0 } table { border-collapse: separate; border-spacing: 2px }
+        td { height: 20px; padding: 0 } .day { width: 40px }
+    </style><table><tr><td id="header" colspan="3" style="width: 240px">month</td></tr>
+        <tr><td class="day" id="c0">1</td><td class="day" id="c1">2</td><td class="day" id="c2">3</td></tr>
+    </table>"#;
+    let mut doc = HtmlDocument::from_html(
+        HTML,
+        DocumentConfig {
+            viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+            html_parser_provider: Some(Arc::new(HtmlProvider) as _),
+            ..Default::default()
+        },
+    );
+    doc.resolve(0.0);
+
+    let header = rect(&doc, "#header");
+    let columns: Vec<_> = (0..3)
+        .map(|index| rect(&doc, &format!("#c{index}")))
+        .collect();
+    assert!((header.2 - 240.0).abs() < 0.1, "header width: {header:?}");
+    for pair in columns.windows(2) {
+        assert!(
+            (pair[0].2 - pair[1].2).abs() < 0.1,
+            "tracks differ: {pair:?}"
+        );
+    }
+    assert!(
+        (columns[0].2 - 78.666_67).abs() < 0.1,
+        "tracks: {columns:?}"
+    );
+}
+
+#[test]
+fn long_colspan_text_does_not_copy_into_each_date_column() {
+    const HTML: &str = r#"<!DOCTYPE html><style>
+        body { margin: 0 } table { border-collapse: collapse }
+        td { height: 20px; padding: 0 } .day { width: 40px }
+    </style><table><tr><td colspan="3">September extraordinarily long month heading</td></tr>
+        <tr><td class="day" id="c0">1</td><td class="day" id="c1">2</td><td class="day" id="c2">3</td></tr>
+    </table>"#;
+    let mut doc = HtmlDocument::from_html(
+        HTML,
+        DocumentConfig {
+            viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+            html_parser_provider: Some(Arc::new(HtmlProvider) as _),
+            ..Default::default()
+        },
+    );
+    doc.resolve(0.0);
+
+    let columns: Vec<_> = (0..3)
+        .map(|index| rect(&doc, &format!("#c{index}")))
+        .collect();
+    for column in &columns {
+        assert!(
+            (column.2 - 40.0).abs() < 0.1,
+            "long heading widened a date track: {columns:?}"
+        );
+    }
+}
+
+#[test]
 fn rowspan_skips_the_occupied_slot() {
     const HTML: &str = r#"<!DOCTYPE html><style>
         body { margin: 0 } table { border-collapse: collapse }
