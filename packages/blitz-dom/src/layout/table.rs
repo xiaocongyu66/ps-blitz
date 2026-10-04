@@ -722,7 +722,7 @@ impl taffy::LayoutPartialTree for TableTreeWrapper<'_> {
             for child_id in children {
                 inline::layout_abspos_child(
                     self.doc,
-                    child_id as u64,
+                    child_id.as_u64(),
                     taffy::Point::ZERO,
                     false,
                     output.size,
