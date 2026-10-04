@@ -390,9 +390,12 @@ impl Provider {
                     .body(body))
             }
             "file" => {
-                let file_path = url
-                    .to_file_path()
-                    .map_err(|()| FetchError::InvalidRequest("file URL is not local".into()))?;
+                let file_path = url.to_file_path().map_err(|()| {
+                    ProviderError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "file URL is not local",
+                    ))
+                })?;
                 let file_content = std::fs::read(file_path)?;
                 Ok(FetchResponse::new(url, StatusCode::OK).body(Bytes::from(file_content)))
             }
