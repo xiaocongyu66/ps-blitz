@@ -129,7 +129,16 @@ pub(crate) fn build_table_context(
     column_sizes.resize(col as usize, style_helpers::auto());
 
     style.grid_template_columns = column_sizes.into_iter().map(|dim| dim.into()).collect();
-    style.grid_template_rows = vec![style_helpers::auto(); row as usize];
+    style.grid_template_rows = rows
+        .iter()
+        .map(|table_row| {
+            if table_row.height > 0.0 {
+                style_helpers::length(table_row.height)
+            } else {
+                style_helpers::auto()
+            }
+        })
+        .collect();
 
     style.gap = match border_collapse {
         BorderCollapse::Separate => {
@@ -268,9 +277,17 @@ pub(crate) fn collect_table_cells(
 
             let row_index = rows.len();
             let first_cell = cells.len();
+            let row_style = node
+                .primary_styles()
+                .map(stylo_taffy::to_taffy_style)
+                .unwrap_or_default();
+            let row_height = match row_style.size.height {
+                taffy::Dimension::Length(value) => value,
+                _ => 0.0,
+            };
             rows.push(TableRow {
                 node_id,
-                height: 0.0,
+                height: row_height,
                 cells: first_cell..first_cell,
             });
 
