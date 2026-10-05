@@ -76,6 +76,20 @@ pub struct TableRowGroup {
     pub rows: Range<usize>,
 }
 
+/// A rowspan=0 cell whose end line is the end of its current row group.
+///
+/// Placement is streamed, so the group end is not known when the cell is
+/// encountered. Keeping this small pending record lets each subsequent row
+/// reserve the occupied slots without allowing the reservation to leak into
+/// the next row group.
+#[derive(Debug, Clone, Copy)]
+struct PendingRowspanZero {
+    group: Option<NodeId>,
+    cell: usize,
+    column: usize,
+    colspan: usize,
+}
+
 pub(crate) fn build_table_context(
     doc: &mut BaseDocument,
     table_root_node_id: NodeId,
@@ -86,6 +100,7 @@ pub(crate) fn build_table_context(
     // CSS table placement is an occupancy problem, not dense grid flow. Keep
     // explicit slots so a cell in a later row can skip an incoming rowspan.
     let mut slots: Vec<Vec<bool>> = Vec::new();
+    let mut pending_rowspan_zero: Vec<PendingRowspanZero> = Vec::new();
 
     let root_node = &mut doc.nodes[table_root_node_id];
 
@@ -128,9 +143,18 @@ pub(crate) fn build_table_context(
             &mut cells,
             &mut rows,
             &mut row_groups,
+            &mut pending_rowspan_zero,
+            None,
             &mut column_sizes,
             &mut first_cell_border,
         );
+    }
+    let table_end = rows.len();
+    for pending in pending_rowspan_zero
+        .drain(..)
+        .filter(|pending| pending.group.is_none())
+    {
+        cells[pending.cell].style.grid_row.end = style_helpers::line((table_end + 1) as i16);
     }
     let column_count = slots.iter().map(Vec::len).max().unwrap_or(0);
     column_sizes.clear();
@@ -230,6 +254,8 @@ pub(crate) fn collect_table_cells(
     cells: &mut Vec<TableCell>,
     rows: &mut Vec<TableRow>,
     row_groups: &mut Vec<TableRowGroup>,
+    pending_rowspan_zero: &mut Vec<PendingRowspanZero>,
+    current_group: Option<NodeId>,
     columns: &mut Vec<TrackSizingFunction>,
     first_cell_border: &mut Option<ServoArc<Border>>,
 ) {
@@ -257,6 +283,11 @@ pub(crate) fn collect_table_cells(
         | DisplayInside::Contents => {
             let is_row_group = !matches!(display.inside(), DisplayInside::Contents);
             let first_row = rows.len();
+            let group = if is_row_group {
+                Some(node_id)
+            } else {
+                current_group
+            };
             let children = std::mem::take(&mut doc.nodes[node_id].children);
             for child_id in children.iter().copied() {
                 doc.nodes[child_id]
@@ -270,15 +301,28 @@ pub(crate) fn collect_table_cells(
                     cells,
                     rows,
                     row_groups,
+                    pending_rowspan_zero,
+                    group,
                     columns,
                     first_cell_border,
                 );
             }
             doc.nodes[node_id].children = children;
             if is_row_group {
+                let group_end = rows.len();
+                let group_pending: Vec<_> = pending_rowspan_zero
+                    .iter()
+                    .filter(|pending| pending.group == Some(node_id))
+                    .copied()
+                    .collect();
+                pending_rowspan_zero.retain(|pending| pending.group != Some(node_id));
+                for pending in group_pending {
+                    cells[pending.cell].style.grid_row.end =
+                        style_helpers::line((group_end + 1) as i16);
+                }
                 row_groups.push(TableRowGroup {
                     node_id,
-                    rows: first_row..rows.len(),
+                    rows: first_row..group_end,
                 });
             }
         }
@@ -287,6 +331,19 @@ pub(crate) fn collect_table_cells(
             let row_index = rows.len();
             if slots.len() <= row_index {
                 slots.push(Vec::new());
+            }
+            for pending in pending_rowspan_zero
+                .iter()
+                .filter(|pending| pending.group == current_group)
+                .copied()
+            {
+                let end = pending.column + pending.colspan;
+                if slots[row_index].len() < end {
+                    slots[row_index].resize(end, false);
+                }
+                for slot in &mut slots[row_index][pending.column..end] {
+                    *slot = true;
+                }
             }
             let first_cell = cells.len();
             let row_style = node
@@ -315,6 +372,8 @@ pub(crate) fn collect_table_cells(
                     cells,
                     rows,
                     row_groups,
+                    pending_rowspan_zero,
+                    current_group,
                     columns,
                     first_cell_border,
                 );
@@ -334,11 +393,11 @@ pub(crate) fn collect_table_cells(
                 .and_then(|val| val.parse::<usize>().ok())
                 .map(|v| v.clamp(1, 1000))
                 .unwrap_or(1);
-            let rowspan: usize = node
+            let rowspan_attr = node
                 .attr(local_name!("rowspan"))
-                .and_then(|val| val.parse::<usize>().ok())
-                .map(|v| v.clamp(1, 1000))
-                .unwrap_or(1);
+                .and_then(|val| val.parse::<usize>().ok());
+            let rowspan = rowspan_attr.filter(|value| *value > 0).unwrap_or(1);
+            let rowspan_zero = rowspan_attr == Some(0);
 
             // Find the first run of free slots in this row. Existing rows are
             // extended as needed so incoming rowspans reserve their columns.
@@ -353,15 +412,23 @@ pub(crate) fn collect_table_cells(
                 }
                 column += 1;
             }
-            for r in current_row..current_row + rowspan {
-                if slots.len() <= r {
-                    slots.push(Vec::new());
-                }
-                if slots[r].len() < column + colspan {
-                    slots[r].resize(column + colspan, false);
-                }
-                for slot in &mut slots[r][column..column + colspan] {
-                    *slot = true;
+            if slots[current_row].len() < column + colspan {
+                slots[current_row].resize(column + colspan, false);
+            }
+            for slot in &mut slots[current_row][column..column + colspan] {
+                *slot = true;
+            }
+            if !rowspan_zero {
+                for r in current_row + 1..current_row + rowspan {
+                    if slots.len() <= r {
+                        slots.push(Vec::new());
+                    }
+                    if slots[r].len() < column + colspan {
+                        slots[r].resize(column + colspan, false);
+                    }
+                    for slot in &mut slots[r][column..column + colspan] {
+                        *slot = true;
+                    }
                 }
             }
             let mut style = stylo_taffy::to_taffy_style(stylo_style);
@@ -454,6 +521,7 @@ pub(crate) fn collect_table_cells(
                 end: style_helpers::line((current_row + rowspan + 1) as i16),
             };
             style.size.width = style_helpers::auto();
+            let cell_index = cells.len();
             cells.push(TableCell {
                 node_id,
                 style,
@@ -461,6 +529,14 @@ pub(crate) fn collect_table_cells(
                 colspan,
                 declared_width,
             });
+            if rowspan_zero {
+                pending_rowspan_zero.push(PendingRowspanZero {
+                    group: current_group,
+                    cell: cell_index,
+                    column,
+                    colspan,
+                });
+            }
         }
         DisplayInside::Flow
         | DisplayInside::FlowRoot

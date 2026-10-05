@@ -268,3 +268,36 @@ fn rowspan_skips_the_occupied_slot() {
         "second-row cell must be below the first row: {span:?} {bottom:?}"
     );
 }
+
+#[test]
+fn rowspan_zero_stays_within_its_row_group() {
+    const HTML: &str = r#"<!DOCTYPE html><style>
+        body { margin: 0 } table { border-collapse: collapse }
+        td { width: 40px; height: 20px; padding: 0 }
+    </style><table>
+        <tbody><tr><td id="zero" rowspan="0">a</td><td>b</td></tr>
+            <tr><td id="after-zero">c</td></tr></tbody>
+        <tbody><tr><td id="next-group">d</td></tr></tbody>
+    </table>"#;
+    let mut doc = HtmlDocument::from_html(
+        HTML,
+        DocumentConfig {
+            viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+            html_parser_provider: Some(Arc::new(HtmlProvider) as _),
+            ..Default::default()
+        },
+    );
+    doc.resolve(0.0);
+
+    let zero = rect(&doc, "#zero");
+    let after_zero = rect(&doc, "#after-zero");
+    let next_group = rect(&doc, "#next-group");
+    assert!(
+        after_zero.0 > zero.0,
+        "rowspan=0 must occupy the first group's remaining row: {zero:?} {after_zero:?}"
+    );
+    assert_eq!(
+        next_group.0, zero.0,
+        "rowspan=0 must not occupy the next row group: {zero:?} {next_group:?}"
+    );
+}
